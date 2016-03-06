@@ -26,14 +26,17 @@
 #include <wmstdio.h>
 #include <wmtime.h>
 #include <wmsdk.h>
+
 #include <led_indicator.h>
 #include <board.h>
 #include <push_button.h>
+
 #include <aws_iot_mqtt_interface.h>
 #include <aws_iot_shadow_interface.h>
 #include <aws_utils.h>
 /* configuration parameters */
 #include <aws_iot_config.h>
+
 
 #include "aws_starter_root_ca_cert.h"
 
@@ -48,23 +51,40 @@ enum state {
 /* These hold each pushbutton's count, updated in the callback ISR */
 static volatile uint32_t pushbutton_a_count;
 static volatile uint32_t pushbutton_a_count_prev = -1;
+//static volatile uint32_t pushbutton_a_count_last_processed = -1; 
+// _prev value is updated by the "procssing" thread.
+// thus synchronization is done this way. It will miss an increment,
+// if other thread didn't actually process it.
+
+
+
 static volatile uint32_t pushbutton_b_count;
 static volatile uint32_t pushbutton_b_count_prev = -1;
+
+
 static volatile uint32_t led_1_state;
 static volatile uint32_t led_1_state_prev = -1;
 
 static output_gpio_cfg_t led_1;
+
+
 static MQTTClient_t mqtt_client;
+
+
+
 static enum state device_state;
 
 /* Thread handle */
 static os_thread_t aws_starter_thread;
 /* Buffer to be used as stack */
 static os_thread_stack_define(aws_starter_stack, 8 * 1024);
+
 /* Thread handle */
 static os_thread_t aws_shadow_yield_thread;
 /* Buffer to be used as stack */
 static os_thread_stack_define(aws_shadow_yield_stack, 2 * 1024);
+
+
 /* aws iot url */
 static char url[128];
 
@@ -103,6 +123,8 @@ static void configure_reset_to_factory()
 /* callback function invoked when pushbutton_a is pressed */
 static void pushbutton_a_cb()
 {
+        // this is how synchronization is done:
+        // this thread only updates when their equal. _prev is rather (_last_processed)
 	if (pushbutton_a_count_prev == pushbutton_a_count)
 		pushbutton_a_count++;
 }
@@ -318,18 +340,25 @@ static void aws_starter_demo(os_thread_arg_t data)
 
 	aws_iot_mqtt_init(&mqtt_client);
 
-	ret = aws_starter_load_configuration(&sp);
+        // this just reads EPROM via wmsdk/../aws_utils
+        // so if this fails this is fatal error
+	ret = aws_starter_load_configuration(&sp);  
 	if (ret != WM_SUCCESS) {
 		wmprintf("aws shadow configuration failed : %d\r\n", ret);
 		goto out;
 	}
 
+        // this as well initializes internal memory structures
+        // only returns error if mqtt_client is NULL
 	ret = aws_iot_shadow_init(&mqtt_client);
 	if (ret != WM_SUCCESS) {
 		wmprintf("aws shadow init failed : %d\r\n", ret);
 		goto out;
 	}
 
+        // TODO: This is the offender - he actually performs 
+        // connection and on flaky wireless connection this may result in 
+        // failure...
 	ret = aws_iot_shadow_connect(&mqtt_client, &sp);
 	if (ret != WM_SUCCESS) {
 		wmprintf("aws shadow connect failed : %d\r\n", ret);
@@ -393,6 +422,7 @@ out:
 void wlan_event_normal_link_lost(void *data)
 {
 	/* led indication to indicate link loss */
+        wmprintf("wlan_event_normal_link_lost()\r\n");
 	aws_iot_shadow_disconnect(&mqtt_client);
 	device_state = AWS_DISCONNECTED;
 }
@@ -400,12 +430,15 @@ void wlan_event_normal_link_lost(void *data)
 void wlan_event_normal_connect_failed(void *data)
 {
 	/* led indication to indicate connect failed */
+        wmprintf("wlan_event_normal_connect_failed()\r\n");
 	aws_iot_shadow_disconnect(&mqtt_client);
 	device_state = AWS_DISCONNECTED;
 }
 
 /* This function gets invoked when station interface connects to home AP.
  * Network dependent services can be started here.
+ * 
+ * // this function will be called also on RECONNECTS!
  */
 void wlan_event_normal_connected(void *data)
 {
@@ -414,8 +447,11 @@ void wlan_event_normal_connected(void *data)
 	time_t time = 1443657600;
 
 	wmprintf("Connected successfully to the configured network\r\n");
+        wmprintf("Will this be run on reconnect?\r\n");
+        wmprintf("Also does this still run when there's no appropriate WLAN?\r\n");
 
-	if (!device_state) {
+	if (!device_state) { 
+            // if first run (eg. device just woke up))
 		/* set system time */
 		wmtime_time_set_posix(time);
 
@@ -441,7 +477,7 @@ void wlan_event_normal_connected(void *data)
 
 	if (!device_state)
 		device_state = AWS_CONNECTED;
-	else if (device_state == AWS_DISCONNECTED)
+	else if (device_state == AWS_DISCONNECTED) // precondition can be that device was reconnected.
 		device_state = AWS_RECONNECTED;
 }
 
@@ -475,6 +511,10 @@ int main()
 	 * to configured network stored in persistent memory. Function
 	 * wlan_event_normal_connected() is invoked on successful connection.
 	 */
+        wmprintf("Starting microAP with network %s and password [%s]", MICRO_AP_SSID, MICRO_AP_PASSPHRASE);
 	wm_wlan_start(MICRO_AP_SSID, MICRO_AP_PASSPHRASE);
+        
+        // !!!the new thread would be started from the "wlan_event_connection_success()"
+        wmprintf("wlan_start() is non blocking");
 	return 0;
 }
