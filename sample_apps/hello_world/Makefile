@@ -2,7 +2,7 @@
 # All Rights Reserved.
 
 exec-y += hello_world
-hello_world-objs-y := src/main.c
+hello_world-objs-y := src/main.c src/status_loop_thread.c src/common.c src/wlan_event.c
 # Applications could also define custom linker files if required using following:
 #hello_world-ld-y := /path/to/ldscript
 # Applications could also define custom board files if required using following:
